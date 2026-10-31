@@ -71,6 +71,7 @@ public final class Main extends JavaPlugin implements Listener {
     private static final long BEACON_TP_COOLDOWN_MS = 30 * 60 * 1000L;
     private static final long GRACE_MS = 60 * 60 * 1000L, BREAK_TICKS = 120 * 20L;
     private static final double BASE_SPEED = 4.0, SPECIAL_SPEED = 1024.0;
+    private static final UUID SWORD_SPEED_MODIFIER_ID = UUID.fromString("5c27b0f4-fc1d-4e2a-9436-7d4b6d5e1040");
     // Protection X armor health bonuses (half of v1.4).
     private static final UUID PROT10_HEALTH_MODIFIER_ID = UUID.fromString("5c27b0f4-fc1d-4e2a-9436-7d4b6d5e1010");
     private static final double PROT10_BONUS_HEALTH = 5.0;
@@ -110,7 +111,7 @@ public final class Main extends JavaPlugin implements Listener {
     }
     @Override public void onDisable() {
         cancelAllBreaks();
-        for (Player p : Bukkit.getOnlinePlayers()) { setSpeed(p, BASE_SPEED); removeArmorBonuses(p); removeBootsSpeed(p); }
+        for (Player p : Bukkit.getOnlinePlayers()) { removeSwordSpeed(p); removeArmorBonuses(p); removeBootsSpeed(p); }
         saveState();
     }
     private void forceHard() { for (World w : Bukkit.getWorlds()) w.setDifficulty(Difficulty.HARD); }
@@ -697,7 +698,7 @@ public final class Main extends JavaPlugin implements Listener {
         Player p = (Player) e.getDamager();
         if (!specialSword(p.getInventory().getItemInMainHand())) return;
         // Attack-speed attribute handles the rapid cooldown; do not inflate event damage.
-        setSpeed(p, SPECIAL_SPEED);
+        applySword(p);
     }
     private boolean protectionX(ItemStack item, String suffix) {
         return item != null && item.getType() != Material.AIR
@@ -714,10 +715,13 @@ public final class Main extends JavaPlugin implements Listener {
     private void applyArmorBonuses(Player p) {
         AttributeInstance health = p.getAttribute(Attribute.GENERIC_MAX_HEALTH);
         if (health == null) return;
-        boolean fullSet = fullProtectionXSet(p);
-        updateHealthModifier(health, PROT10_HEALTH_MODIFIER_ID, "smp_prot10_helmet", 5.0, fullSet);
-        updateHealthModifier(health, PROT10_CHEST_MODIFIER_ID, "smp_prot10_chestplate", 20.0, fullSet);
-        updateHealthModifier(health, PROT10_LEGS_MODIFIER_ID, "smp_prot10_leggings", 5.0, fullSet);
+        PlayerInventory inv = p.getInventory();
+        updateHealthModifier(health, PROT10_HEALTH_MODIFIER_ID, "smp_prot10_helmet", 5.0,
+                protectionX(inv.getHelmet(), "_HELMET"));
+        updateHealthModifier(health, PROT10_CHEST_MODIFIER_ID, "smp_prot10_chestplate", 20.0,
+                protectionX(inv.getChestplate(), "_CHESTPLATE"));
+        updateHealthModifier(health, PROT10_LEGS_MODIFIER_ID, "smp_prot10_leggings", 5.0,
+                protectionX(inv.getLeggings(), "_LEGGINGS"));
         if (p.getHealth() > health.getValue()) p.setHealth(Math.max(0.1, health.getValue()));
     }
     private void updateHealthModifier(AttributeInstance attr, UUID id, String name, double amount, boolean enabled) {
@@ -741,9 +745,9 @@ public final class Main extends JavaPlugin implements Listener {
     }
     private void applyBootsSpeed(Player p) {
         UUID id = p.getUniqueId();
-        if (fullProtectionXSet(p)) {
-            // Speed II = amplifier 1; refresh every second while boots are equipped.
-            p.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, 35, 1, false, false));
+        if (protectionX(p.getInventory().getBoots(), "_BOOTS")) {
+            // Speed I = amplifier 0; boots alone grant this effect.
+            p.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, 35, 0, false, false));
             speedBootsApplied.add(id);
         } else {
             removeBootsSpeed(p);
@@ -753,14 +757,33 @@ public final class Main extends JavaPlugin implements Listener {
         if (!speedBootsApplied.remove(p.getUniqueId())) return;
         PotionEffect active = p.getPotionEffect(PotionEffectType.SPEED);
         // Avoid removing unrelated higher-level effects.
-        if (active != null && active.getAmplifier() == 1 && active.getDuration() <= 35) {
+        if (active != null && active.getAmplifier() == 0 && active.getDuration() <= 35) {
             p.removePotionEffect(PotionEffectType.SPEED);
         }
     }
-    private void applySword(Player p) { setSpeed(p, specialSword(p.getInventory().getItemInMainHand()) ? SPECIAL_SPEED : BASE_SPEED); }
-    private void setSpeed(Player p, double speed) {
+    // Attribute modifier, rather than base speed, survives vanilla sword's -2.4 speed modifier.
+    // Keep the player's original base value untouched so other plugins/attributes are respected.
+    private void applySword(Player p) {
         AttributeInstance a = p.getAttribute(Attribute.GENERIC_ATTACK_SPEED);
-        if (a != null && Math.abs(a.getBaseValue() - speed) > .01) a.setBaseValue(speed);
+        if (a == null) return;
+        boolean enabled = specialSword(p.getInventory().getItemInMainHand());
+        AttributeModifier current = null;
+        for (AttributeModifier modifier : a.getModifiers()) {
+            if (SWORD_SPEED_MODIFIER_ID.equals(modifier.getUniqueId())) { current = modifier; break; }
+        }
+        if (enabled && current == null) {
+            a.addModifier(new AttributeModifier(SWORD_SPEED_MODIFIER_ID, "smp_sharp10_attack_speed",
+                    SPECIAL_SPEED, AttributeModifier.Operation.ADD_NUMBER));
+        } else if (!enabled && current != null) {
+            a.removeModifier(current);
+        }
+    }
+    private void removeSwordSpeed(Player p) {
+        AttributeInstance a = p.getAttribute(Attribute.GENERIC_ATTACK_SPEED);
+        if (a == null) return;
+        for (AttributeModifier modifier : new ArrayList<>(a.getModifiers())) {
+            if (SWORD_SPEED_MODIFIER_ID.equals(modifier.getUniqueId())) a.removeModifier(modifier);
+        }
     }
     private boolean specialSword(ItemStack item) {
         return item != null && item.getType() == Material.NETHERITE_SWORD && item.getEnchantmentLevel(Enchantment.DAMAGE_ALL) >= 10;
