@@ -1,0 +1,29 @@
+name: Build SMP Plugin
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Build plugin JAR
+        run: mvn --batch-mode --no-transfer-progress clean package
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SMP-1.19.4-JAR
+          path: target/SMP-1.19.4.jar
+          if-no-files-found: error
