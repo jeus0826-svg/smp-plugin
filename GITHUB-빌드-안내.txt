@@ -1,18 +1,1 @@
-SMP v1.25 - GitHub 자동 빌드 방법
 
-1. https://github.com 에 로그인하고 New repository를 눌러 새 저장소를 만드세요.
-   Repository name 예: smp-plugin / Public 또는 Private 선택 / Create repository
-2. 압축을 풀고 SMP-1.19.4 폴더 안에 있는 파일과 폴더를 모두 GitHub 저장소 최상위에 업로드하세요.
-   반드시 pom.xml, src 폴더, .github/workflows/build.yml이 저장소 최상위에 있어야 합니다.
-   주의: 윈도우에서 .github 폴더가 숨겨지지 않았는지 확인하세요.
-3. Commit changes를 누릅니다.
-4. 저장소의 Actions 탭 > Build SMP Plugin > 실행 결과를 확인하세요.
-   자동 실행되지 않으면 Run workflow 버튼으로 실행하세요.
-5. 초록색 체크(성공)가 뜨면 실행 상세 페이지 하단 Artifacts의
-   SMP-1.19.4-JAR를 다운로드하세요.
-6. 다운로드된 ZIP을 압축 해제하면 SMP-1.19.4.jar가 나옵니다.
-7. Hostinger AMP에서 서버 Stop > File Manager > plugins 폴더에
-   SMP-1.19.4.jar 업로드 > 서버 Start > Console에서 plugins 명령으로 확인하세요.
-
-참고: 소스코드의 실제 컴파일 및 게임 내 동작은 아직 검증되지 않았습니다.
-빌드가 빨간색 X로 실패하면 Actions의 Build plugin JAR 로그를 공유해 주세요.
