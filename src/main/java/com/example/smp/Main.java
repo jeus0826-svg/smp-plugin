@@ -509,6 +509,12 @@ public final class Main extends JavaPlugin implements Listener {
         saveState();
     }
     private void tick() {
+        // Equipment effects must work even before /startgame.
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            applySword(p);
+            applyArmorBonuses(p);
+            applyBootsSpeed(p);
+        }
         if (startedAt == -1) return;
         for (UUID owner : new HashSet<>(beacons.keySet())) {
             Location l = beacons.get(owner); if (l == null) continue;
@@ -522,7 +528,7 @@ public final class Main extends JavaPlugin implements Listener {
             }
         }
         for (Player p : Bukkit.getOnlinePlayers()) {
-            applyPenalty(p); applySword(p); applyArmorBonuses(p); applyBootsSpeed(p); applyZone(p);
+            applyPenalty(p); applyZone(p);
             if (System.currentTimeMillis() / 600000L != (System.currentTimeMillis() - 1000L) / 600000L && !beacons.containsKey(finalOwner(p.getUniqueId()))
                     && !permanentlyLost.contains(p.getUniqueId()) && finalOwner(p.getUniqueId()).equals(p.getUniqueId())) {
                 sendBuyLink(p);
@@ -704,13 +710,6 @@ public final class Main extends JavaPlugin implements Listener {
         return item != null && item.getType() != Material.AIR
                 && item.getType().name().endsWith(suffix)
                 && item.getEnchantmentLevel(Enchantment.PROTECTION_ENVIRONMENTAL) >= 10;
-    }
-    private boolean fullProtectionXSet(Player p) {
-        PlayerInventory inv = p.getInventory();
-        return protectionX(inv.getHelmet(), "_HELMET")
-                && protectionX(inv.getChestplate(), "_CHESTPLATE")
-                && protectionX(inv.getLeggings(), "_LEGGINGS")
-                && protectionX(inv.getBoots(), "_BOOTS");
     }
     private void applyArmorBonuses(Player p) {
         AttributeInstance health = p.getAttribute(Attribute.GENERIC_MAX_HEALTH);

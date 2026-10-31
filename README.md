@@ -1,17 +1,92 @@
-# SMP 1.19.4 v1.26
+# SMP 1.19.4 — 통합 버전 v1.23
 
-Paper 1.19.4 / Java 17. Existing SMP v1.25 rules retained.
+**대상:** Minecraft Java Edition 1.19.4 / Paper 또는 Spigot 1.19.4 / Java 17
 
-## Changes
-- Sharpness X netherite sword: +1024 attack speed attribute modifier while held; removes modifier when unequipped.
-- Protection X helmet: +5 max HP on its own.
-- Protection X chestplate: +20 max HP on its own.
-- Protection X leggings: +5 max HP on its own.
-- Protection X boots: Speed I on their own.
-- All four combined: +30 max HP (50 HP total, 25 hearts) and Speed I.
-- Corrected EnchantItemEvent import for 1.19.4.
+이 프로젝트는 지금까지 요청한 기능을 최신 v1.22 코드 기준으로 통합한 **Maven 소스 프로젝트**입니다. 과거에 추가했다가 삭제하도록 요청한 기능은 포함하지 않습니다.
 
-## Build
-Upload these files to the root of your GitHub repository and run GitHub Actions > Build SMP Plugin > Run workflow. Download the artifact ZIP and extract `SMP-1.19.4.jar`; upload only that JAR to AMP `/plugins` after backing up `plugins/SMP/state.yml` and removing old `SMP-1.19.4.jar`. Restart the server, verify console says SMP v1.26.0.
+## 빌드 및 설치
+1. Java 17과 Maven 설치
+2. 프로젝트 폴더에서 `mvn clean package`
+3. `target/SMP-1.19.4.jar`를 서버 `plugins/` 폴더로 복사
+4. 서버 종료 상태에서 월드 및 `plugins/SMP/state.yml` 백업 후 재시작
 
-Note: Source is updated, but this environment has not compiled or runtime-tested the plugin. Verify the GitHub build succeeds and test in-game.
+## 현재 적용되는 규칙
+
+### 시작·부활
+- OP 명령어 `/startgame`: 플레이어를 오버월드 랜덤 위치로 보내고 신호기 하나씩 지급. 시작 지점은 월드 스폰에서 최소 5,000블록 떨어진 ±10,000 범위에서 탐색.
+- 60분 이내 신호기 미설치 시 나약함 패널티.
+- 죽으면 침대/신호기와 무관하게 `/startgame`에서 배정된 개인 시작 위치로 부활.
+- 난이도 Hard 유지.
+- 플레이어 사망 시 **현재 레벨과 경험치 바에 해당하는 XP 전량을 경험치 구슬로 드롭**, 사망 후 레벨 0.
+
+### 신호기·팀
+- 신호기는 오버월드 해수면 아래 설치, 기본적으로 소유자당 1개.
+- 활성 신호기(피라미드 1단계 이상)에서 **반경 500블록 팀원에게 성급함 III**.
+- 다른 팀이 반경 50블록에 들어오면 침입 경고, 발광/나약함.
+- 신호기 주위 동서남북 배리어 기둥 생성, 중앙 광선 통로 확보.
+- 적 신호기에서 2분간 점령 절차를 유지하면 파괴 및 패배자 팀 병합; 점령당한 사람은 신호기 재구매 불가.
+- `/beacontp`: 팀 신호기로 귀환, **성공 시 30분 재사용 대기시간**.
+- `/buybeacon`: 첫 구매 다이아 64개, 다음 128개, 192개, 256개… 구매 성공마다 +64개. 플레이어별 구매 기록 유지.
+- OP 명령어 `/teamset <팀장> <팀원1> [팀원2] ...`, `/teamclear <팀원>`: 접속 중인 플레이어 수동 팀 지정/해제.
+
+### 방어구·인챈트
+- **보호 X 헬멧·흉갑·바지·신발 4부위를 모두 착용했을 때만** 최대 체력 +30 HP(기본 20 → 50 HP, 하트 25칸) 및 신속 II.
+- 한 부위라도 보호 X가 아니거나 벗으면 세트 효과 제거.
+- 날카로움 X 네더라이트 검의 공격 속도 증가.
+- 모루에서 보호/날카로움 인챈트 합성으로 최대 X까지 강화 시 목표 V=40레벨, VI=50, VII=60, VIII=70, IX=80, X=90.
+- 그 외 인챈트 책 부착 모루 비용 39레벨 설정.
+- 수선·무한 인챈트는 인챈트 테이블·모루·주민 거래 결과물에서 제한(이미 존재하는 아이템의 자동 삭제는 아님).
+
+### 전투·엔드
+- 플레이어가 다른 플레이어를 처치하면 사망자의 스킨이 적용된 머리 1개 드롭.
+- 자연 생성/재소환 엔더 드래곤을 **플레이어가 직접 처치한 것으로 판정되면** 처치자에게 경험치 레벨 +50. 드래곤 XP 구슬은 코드상 처치자가 확인되는 경우에 0으로 조정.
+- 엔더 게이트웨이 및 엔더시티 생성은 기본 마인크래프트 동작으로 유지.
+- 과거 `/dragonreturn`, 엔드 10분 부활 제한, `/purgeendcities`, 엔더시티 삭제 기능은 **삭제된 상태**.
+
+### 기타 밸런스
+- 일반 황금사과 재생 II 지속시간 2초.
+- 플레이어 인벤토리의 일반·투척·잔류 포션 합계 최대 2개(초과분 드롭).
+- 플레이어당 서버 로컬 날짜 기준 주민 거래 20회 제한.
+- 침대(네더·엔드), 리스폰 정박기(오버월드·엔드), 엔드 수정(엔드)의 폭발 **엔티티 피해를 25%로 감소**. 블록 파괴는 그대로.
+- 진행 데이터는 `plugins/SMP/state.yml`에 저장. `/startgame`은 진행 데이터와 구매/쿨다운/수동 팀 상태를 초기화하나 월드의 모든 기존 건축물을 원상 복구하지 않음.
+
+## 명령어
+`/startgame` (OP), `/beacontp`, `/buybeacon`, `/teamset` (OP), `/teamclear` (OP)
+
+## 검증 상태 및 주의
+- 이 패키지는 **소스 ZIP**이지 빌드된 JAR가 아닙니다.
+- 실제 Spigot API 의존성을 이용한 컴파일과 Paper 서버 인게임 테스트는 완료되지 않았습니다.
+- 특히 **40레벨 이상 모루 비용**, 주민 거래 횟수 제한, 드래곤 보상, 폭발 피해, 신호기 점령은 운영 전 테스트 서버에서 검증해야 합니다.
+- 이전 버전의 엔더시티 제거 기능이 이미 월드에서 삭제한 건물은 이 버전이 자동 복구하지 않습니다.
+
+### 전투 중 접속 종료 방지 (v1.23)
+- 다른 플레이어의 근접/화살 등 투사체 공격으로 **실제 피해**를 받으면 전투 상태가 3분간 적용됩니다. 공격자도 전투 상태가 됩니다.
+- 플레이어 공격을 다시 받으면 3분 타이머가 초기화됩니다.
+- 3분 동안 플레이어 간 피해가 없으면 전투 상태가 만료됩니다.
+- **기술적으로 접속 종료 버튼이나 인터넷 연결 해제를 막을 수는 없습니다.** 대신 전투 중 나가면 사망 처리되어 아이템과 경험치를 떨어뜨립니다.
+- 죽거나 `/startgame`으로 새 게임을 시작하면 전투 상태가 해제됩니다.
+- 실제 서버의 `PlayerQuitEvent` 사망 처리와 드롭은 인게임 검증이 필요합니다.
+
+
+## v1.24 팀 시작 규칙
+- `/startgame` 전에 `/teamset <팀장> [팀원...]` 으로 팀을 지정합니다. 팀장은 첫 번째 이름입니다.
+- `/teamleader <현재팀장> <새팀장>` 으로 게임 시작 전 팀장을 변경할 수 있습니다.
+- `/startgame`은 사전에 지정된 팀을 보존하며 팀별로 하나의 스폰 지점을 지정합니다.
+- 같은 팀은 같은 좌표에서 시작하며 팀장에게만 신호기 1개가 지급됩니다.
+- 모든 팀의 시작 좌표는 월드 스폰에서 수평거리 최소 3000블록, 다른 팀 시작 좌표와 수평거리 최소 2000블록 떨어집니다.
+- 팀 미지정 플레이어는 1인 팀으로 처리됩니다.
+- 부활은 각자의 최초 팀 스폰 지점으로 이동합니다.
+- 공간이 부족하면 임의로 거리 제한을 무시하지 않고 해당 플레이어의 초기화를 중단합니다.
+- 팀 편성과 팀장 변경은 게임 시작 전에 진행해야 합니다.
+
+## v1.25 신호기 구매 제한
+- `/buybeacon` 사용 시 플레이어가 속한 팀에 설치된 신호기가 있으면 구매가 거부됩니다.
+- 설치된 팀 신호기가 없을 때만 기존 구매 조건 및 누적 가격(64개씩 증가)이 적용됩니다.
+
+
+## v1.27 fix
+- Equipment bonuses are updated every scheduled tick, including before `/startgame`.
+- Protection X helmet +5 max HP, chestplate +20, leggings +5, boots Speed I independently.
+- Sharpness X attack speed unchanged from v1.26.
+- Confirm `/version SMP` shows 1.27.0 after installing the new JAR.
+- Max health test: `/attribute @s minecraft:generic.max_health get` (20 / 25 / 40 / 25 / 50).
