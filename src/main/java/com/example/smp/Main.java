@@ -59,6 +59,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.scoreboard.Scoreboard;
+import org.bukkit.scoreboard.Team;
 
 import java.io.File;
 import java.io.IOException;
@@ -88,6 +90,9 @@ public final class Main extends JavaPlugin implements Listener {
     private final Set<UUID> initialized = new HashSet<>(), everPlaced = new HashSet<>(), permanentlyLost = new HashSet<>();
     private final Map<UUID, Location> beacons = new HashMap<>(), starts = new HashMap<>();
     private final Map<UUID, Location> teamSpawns = new HashMap<>();
+    private final Map<UUID, String> knownNames = new HashMap<>();
+    private final Map<UUID, Integer> teamColors = new HashMap<>();
+    private static final ChatColor[] TEAM_PALETTE = {ChatColor.RED, ChatColor.BLUE, ChatColor.GREEN, ChatColor.YELLOW, ChatColor.LIGHT_PURPLE, ChatColor.AQUA, ChatColor.GOLD, ChatColor.DARK_RED, ChatColor.DARK_BLUE, ChatColor.DARK_GREEN, ChatColor.DARK_PURPLE, ChatColor.DARK_AQUA};
     private final Map<String, UUID> beaconOwners = new HashMap<>();
     private final Map<UUID, List<Location>> barrierColumns = new HashMap<>();
     private final Map<UUID, UUID> merged = new HashMap<>();
@@ -107,6 +112,7 @@ public final class Main extends JavaPlugin implements Listener {
         Bukkit.getScheduler().runTaskTimer(this, this::tick, 20L, 20L);
         Bukkit.getScheduler().runTaskTimer(this, this::forceHard, 20L, 200L);
         Bukkit.getScheduler().runTaskTimer(this, this::saveState, 1200L, 1200L);
+        refreshTeamColors();
         getLogger().info("SMP 1.19.4 enabled");
     }
     @Override public void onDisable() {
@@ -223,30 +229,35 @@ public final class Main extends JavaPlugin implements Listener {
         switch (command.getName().toLowerCase(Locale.ROOT)) {
             case "teamset":
                 if (!sender.hasPermission("smp.admin")) { sender.sendMessage("권한이 없습니다."); return true; }
-                if (args.length < 1) { sender.sendMessage("사용법: /teamset <팀장> [팀원1] [팀원2] ..."); return true; }
-                Player leader = Bukkit.getPlayerExact(args[0]);
-                if (leader == null) { sender.sendMessage("팀장은 온라인 상태여야 합니다."); return true; }
-                UUID leaderId = leader.getUniqueId();
+                if (args.length < 2) { sender.sendMessage("사용법: /teamset <팀장> <팀원1> [팀원2] ... (오프라인 가능)"); return true; }
+                UUID leaderId = resolvePlayerId(args[0]);
+                if (leaderId == null) { sender.sendMessage("§c팀장 닉네임을 확인할 수 없습니다: " + args[0]); return true; }
                 if (!finalOwner(leaderId).equals(leaderId) || permanentlyLost.contains(leaderId)) {
-                    sender.sendMessage("다른 팀에 소속되거나 점령당한 플레이어는 팀장이 될 수 없습니다."); return true;
+                    sender.sendMessage("§c다른 팀에 소속되거나 점령당한 플레이어는 팀장이 될 수 없습니다."); return true;
                 }
-                if (startedAt != -1 && !initialized.isEmpty()) { sender.sendMessage("§c팀 편성은 /startgame 전에 완료해 주세요."); return true; }
+                knownNames.put(leaderId, args[0]);
+                teamColors.putIfAbsent(leaderId, nextTeamColor());
                 for (int i = 1; i < args.length; i++) {
-                    Player member = Bukkit.getPlayerExact(args[i]);
-                    if (member == null) { sender.sendMessage("§c접속하지 않은 플레이어: " + args[i]); continue; }
-                    UUID memberId = member.getUniqueId();
-                    if (memberId.equals(leaderId)) { sender.sendMessage("팀장은 팀원으로 추가할 수 없습니다."); continue; }
-                    if (permanentlyLost.contains(memberId)) { sender.sendMessage("§c점령당한 플레이어는 수동 팀 변경 불가: " + member.getName()); continue; }
-                    if (beacons.containsKey(memberId)) { sender.sendMessage("§c자신의 신호기가 있는 플레이어는 먼저 신호기를 정리해야 합니다: " + member.getName()); continue; }
+                    UUID memberId = resolvePlayerId(args[i]);
+                    if (memberId == null) { sender.sendMessage("§c닉네임 확인 실패: " + args[i]); continue; }
+                    if (memberId.equals(leaderId)) continue;
+                    if (permanentlyLost.contains(memberId) || beacons.containsKey(memberId)) {
+                        sender.sendMessage("§c점령당했거나 신호기를 보유한 플레이어는 변경할 수 없습니다: " + args[i]); continue;
+                    }
                     if (!finalOwner(memberId).equals(memberId) && !manualTeamMembers.contains(memberId)) {
-                        sender.sendMessage("§c점령으로 병합된 플레이어는 이동할 수 없습니다: " + member.getName()); continue;
+                        sender.sendMessage("§c점령으로 병합된 플레이어는 이동할 수 없습니다: " + args[i]); continue;
                     }
                     merged.put(memberId, leaderId);
                     manualTeamMembers.add(memberId);
-                    sender.sendMessage("§a" + member.getName() + " → " + leader.getName() + " 팀에 추가");
-                    member.sendMessage("§a" + leader.getName() + " 팀에 배정되었습니다.");
+                    knownNames.put(memberId, args[i]);
+                    sender.sendMessage("§a" + args[i] + " → " + args[0] + " 팀에 추가");
+                    Player member = Bukkit.getPlayer(memberId);
+                    if (member != null) {
+                        member.sendMessage("§a" + args[0] + " 팀에 배정되었습니다.");
+                        if (startedAt != -1) teleportToTeam(member, true);
+                    }
                 }
-                saveState(); return true;
+                refreshTeamColors(); saveState(); return true;
             case "teamleader":
                 if (!sender.hasPermission("smp.admin")) { sender.sendMessage("권한이 없습니다."); return true; }
                 if (args.length != 2) { sender.sendMessage("사용법: /teamleader <현재팀장> <새팀장>"); return true; }
@@ -275,7 +286,8 @@ public final class Main extends JavaPlugin implements Listener {
                     List<Location> columns = barrierColumns.remove(oldId);
                     if (columns != null) barrierColumns.put(newId, columns);
                 }
-                saveState(); sender.sendMessage("§a새 팀장: " + newLeader.getName()); return true;
+                Integer color = teamColors.remove(oldId); if (color != null) teamColors.put(newId, color);
+                refreshTeamColors(); saveState(); sender.sendMessage("§a새 팀장: " + newLeader.getName()); return true;
             case "teamclear":
                 if (!sender.hasPermission("smp.admin")) { sender.sendMessage("권한이 없습니다."); return true; }
                 if (args.length != 1) { sender.sendMessage("사용법: /teamclear <팀원>"); return true; }
@@ -284,7 +296,7 @@ public final class Main extends JavaPlugin implements Listener {
                 if (startedAt != -1 && !initialized.isEmpty()) { sender.sendMessage("§c팀 변경은 /startgame 전에 완료해 주세요."); return true; }
                 if (!manualTeamMembers.remove(leaving.getUniqueId())) { sender.sendMessage("수동 배정된 팀원이 아닙니다."); return true; }
                 merged.remove(leaving.getUniqueId());
-                saveState(); sender.sendMessage("§a" + leaving.getName() + "의 수동 팀 배정을 해제했습니다."); return true;
+                refreshTeamColors(); saveState(); sender.sendMessage("§a" + leaving.getName() + "의 수동 팀 배정을 해제했습니다."); return true;
             case "startgame":
                 if (!sender.hasPermission("smp.admin")) { sender.sendMessage("권한이 없습니다."); return true; }
                 cancelAllBreaks();
@@ -299,6 +311,7 @@ public final class Main extends JavaPlugin implements Listener {
                 saveState();
                 Bukkit.broadcastMessage("§aSMP 시작! 60분 안에 신호기를 설치하세요.");
                 for (Player p : Bukkit.getOnlinePlayers()) initializePlayer(p);
+                refreshTeamColors();
                 return true;
             case "beacontp":
                 if (!(sender instanceof Player)) { sender.sendMessage("플레이어 전용입니다."); return true; }
@@ -331,7 +344,12 @@ public final class Main extends JavaPlugin implements Listener {
         Player p = e.getPlayer();
         Bukkit.getScheduler().runTaskLater(this, () -> {
             if (!p.isOnline()) return;
-            if (startedAt != -1 && !initialized.contains(p.getUniqueId())) initializePlayer(p);
+            knownNames.put(p.getUniqueId(), p.getName());
+            if (startedAt != -1) {
+                if (!initialized.contains(p.getUniqueId())) initializePlayer(p);
+                else if (beacons.containsKey(finalOwner(p.getUniqueId())) || starts.get(p.getUniqueId()) == null || !finalOwner(p.getUniqueId()).equals(p.getUniqueId())) teleportToTeam(p, false);
+            }
+            refreshTeamColors();
             applySword(p); applyArmorBonuses(p); applyBootsSpeed(p); applyPenalty(p);
         }, 20L);
     }
@@ -375,7 +393,9 @@ public final class Main extends JavaPlugin implements Listener {
             }
             teamSpawns.put(owner, spawn.clone());
         }
-        if (!p.teleport(spawn.clone())) return;
+        Location destination = teamDestination(owner);
+        if (destination == null) destination = spawn.clone();
+        if (!p.teleport(destination)) return;
         initialized.add(p.getUniqueId());
         starts.put(p.getUniqueId(), spawn.clone());
         if (p.getUniqueId().equals(owner)) {
@@ -386,6 +406,61 @@ public final class Main extends JavaPlugin implements Listener {
         }
         p.sendMessage("§a팀 스폰: " + spawn.getBlockX() + ", " + spawn.getBlockY() + ", " + spawn.getBlockZ());
         saveState();
+    }
+    @SuppressWarnings("deprecation")
+    private UUID resolvePlayerId(String name) {
+        Player online = Bukkit.getPlayerExact(name);
+        if (online != null) return online.getUniqueId();
+        for (Map.Entry<UUID, String> entry : knownNames.entrySet())
+            if (entry.getValue().equalsIgnoreCase(name)) return entry.getKey();
+        org.bukkit.OfflinePlayer offline = Bukkit.getOfflinePlayer(name);
+        return offline.getUniqueId();
+    }
+    private int nextTeamColor() {
+        Set<Integer> used = new HashSet<>(teamColors.values());
+        for (int i = 0; i < TEAM_PALETTE.length; i++) if (!used.contains(i)) return i;
+        return teamColors.size() % TEAM_PALETTE.length;
+    }
+    private void refreshTeamColors() {
+        Scoreboard board = Bukkit.getScoreboardManager().getMainScoreboard();
+        for (Team t : new ArrayList<>(board.getTeams())) if (t.getName().startsWith("smp_")) t.unregister();
+        Set<UUID> owners = new HashSet<>();
+        owners.addAll(teamColors.keySet());
+        for (UUID id : merged.keySet()) owners.add(finalOwner(id));
+        for (UUID owner : owners) {
+            teamColors.putIfAbsent(owner, nextTeamColor());
+            String id = "smp_" + owner.toString().replace("-", "").substring(0, 12);
+            Team team = board.registerNewTeam(id);
+            ChatColor color = TEAM_PALETTE[teamColors.get(owner) % TEAM_PALETTE.length];
+            team.setColor(color); team.setPrefix(color.toString());
+            for (Map.Entry<UUID, String> entry : knownNames.entrySet())
+                if (finalOwner(entry.getKey()).equals(owner)) team.addEntry(entry.getValue());
+        }
+        for (Player p : Bukkit.getOnlinePlayers()) p.setScoreboard(board);
+    }
+    private Location teamDestination(UUID owner) {
+        Location beacon = beacons.get(owner);
+        if (beacon != null && beacon.getWorld() != null && beacon.getBlock().getType() == Material.BEACON) {
+            Location near = safeNear(beacon);
+            if (near != null) return near;
+        }
+        return teamSpawns.get(owner);
+    }
+    private void teleportToTeam(Player p, boolean newlyAdded) {
+        UUID owner = finalOwner(p.getUniqueId());
+        Location destination = teamDestination(owner);
+        if (destination == null) {
+            // The team leader has not logged in yet: establish one team spawn now.
+            destination = safeRandomSpawn();
+            if (destination == null) { p.sendMessage("§c팀 스폰을 찾지 못했습니다."); return; }
+            teamSpawns.put(owner, destination.clone());
+        }
+        if (p.teleport(destination.clone())) {
+            initialized.add(p.getUniqueId());
+            starts.put(p.getUniqueId(), teamSpawns.getOrDefault(owner, destination).clone());
+            p.sendMessage(newlyAdded ? "§a새 팀 위치로 이동했습니다." : "§a팀 신호기 또는 팀 스폰으로 이동했습니다.");
+            saveState();
+        }
     }
     private Location safeRandomSpawn() {
         World w = Bukkit.getWorlds().stream().filter(x -> x.getEnvironment() == World.Environment.NORMAL).findFirst().orElse(null);
@@ -452,7 +527,13 @@ public final class Main extends JavaPlugin implements Listener {
                 saveState();
             }
         });
-        saveState();
+        // Teleport after Bukkit has finished placing the beacon block.
+        Bukkit.getScheduler().runTask(this, () -> {
+            for (Player teammate : Bukkit.getOnlinePlayers()) {
+                if (finalOwner(teammate.getUniqueId()).equals(id)) teleportToTeam(teammate, false);
+            }
+            saveState();
+        });
     }
     @EventHandler(ignoreCancelled = true) public void onBreak(BlockBreakEvent e) {
         if (isManagedBarrier(e.getBlock().getLocation())) {
@@ -650,9 +731,9 @@ public final class Main extends JavaPlugin implements Listener {
     }
     @EventHandler public void onRespawn(PlayerRespawnEvent e) {
         Player p = e.getPlayer();
-        // Always respawn where this player first appeared after /startgame.
-        // Beacon ownership and bed spawn points do not override the SMP start location.
-        Location target = starts.get(p.getUniqueId());
+        UUID owner = finalOwner(p.getUniqueId());
+        Location target = teamDestination(owner);
+        if (target == null) target = starts.get(p.getUniqueId());
         if (target != null && target.getWorld() != null) {
             Location safe = clearForPlayer(target) ? target : safeNear(target);
             if (safe != null && clearForPlayer(safe)) e.setRespawnLocation(safe);
@@ -860,6 +941,8 @@ public final class Main extends JavaPlugin implements Listener {
         for (UUID id : everPlaced) y.set("everPlaced." + id, true);
         for (UUID id : permanentlyLost) y.set("permanentlyLost." + id, true);
         for (Map.Entry<UUID, UUID> e : merged.entrySet()) y.set("merged." + e.getKey(), e.getValue().toString());
+        for (Map.Entry<UUID, String> e : knownNames.entrySet()) y.set("knownNames." + e.getKey(), e.getValue());
+        for (Map.Entry<UUID, Integer> e : teamColors.entrySet()) y.set("teamColors." + e.getKey(), e.getValue());
         for (UUID id : manualTeamMembers) y.set("manualTeamMembers." + id, true);
         for (Map.Entry<UUID, Location> e : beacons.entrySet()) {
             y.set("beacons." + e.getKey() + ".location", e.getValue());
@@ -890,6 +973,14 @@ public final class Main extends JavaPlugin implements Listener {
         resetTradeDay();
         loadIds(y, "initialized", initialized); loadIds(y, "everPlaced", everPlaced); loadIds(y, "permanentlyLost", permanentlyLost);
         loadIds(y, "manualTeamMembers", manualTeamMembers);
+        ConfigurationSection namesSection = y.getConfigurationSection("knownNames");
+        if (namesSection != null) for (String id : namesSection.getKeys(false)) {
+            try { knownNames.put(UUID.fromString(id), namesSection.getString(id)); } catch (IllegalArgumentException ignored) { }
+        }
+        ConfigurationSection colorsSection = y.getConfigurationSection("teamColors");
+        if (colorsSection != null) for (String id : colorsSection.getKeys(false)) {
+            try { teamColors.put(UUID.fromString(id), colorsSection.getInt(id)); } catch (IllegalArgumentException ignored) { }
+        }
         ConfigurationSection merges = y.getConfigurationSection("merged");
         if (merges != null) for (String id : merges.getKeys(false)) {
             try { merged.put(UUID.fromString(id), UUID.fromString(Objects.requireNonNull(y.getString("merged." + id)))); }
