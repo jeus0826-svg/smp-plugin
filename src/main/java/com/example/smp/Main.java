@@ -431,7 +431,9 @@ public final class Main extends JavaPlugin implements Listener {
             teamColors.putIfAbsent(owner, nextTeamColor());
             String id = "smp_" + owner.toString().replace("-", "").substring(0, 12);
             Team team = board.registerNewTeam(id);
-            ChatColor color = TEAM_PALETTE[teamColors.get(owner) % TEAM_PALETTE.length];
+            org.bukkit.ChatColor color = org.bukkit.ChatColor.valueOf(
+    TEAM_PALETTE[teamColors.get(owner) % TEAM_PALETTE.length].getName().toUpperCase()
+);
             team.setColor(color); team.setPrefix(color.toString());
             for (Map.Entry<UUID, String> entry : knownNames.entrySet())
                 if (finalOwner(entry.getKey()).equals(owner)) team.addEntry(entry.getValue());
