@@ -809,12 +809,12 @@ public final class Main extends JavaPlugin implements Listener {
         if (e.getHand() != EquipmentSlot.HAND) return;
         if (e.getAction() != Action.RIGHT_CLICK_AIR && e.getAction() != Action.RIGHT_CLICK_BLOCK) return;
         ItemStack item = e.getItem();
-        if (item == null || item.getType() != Material.NETHERITE_SCRAP) return;
+        if (item == null || item.getType() != Material.SPYGLASS) return;
         e.setCancelled(true);
         Player p = e.getPlayer();
         long now = System.currentTimeMillis();
-        if (now - locatorCooldown.getOrDefault(p.getUniqueId(), 0L) < 10000L) {
-            p.sendMessage("§e추적 불꽃이 아직 유지되고 있습니다.");
+        if (now - locatorCooldown.getOrDefault(p.getUniqueId(), 0L) < 180000L) {
+            p.sendMessage("§e망원경 추적은 3분마다 사용할 수 있습니다. 남은 시간: " + ((180000L - (now - locatorCooldown.getOrDefault(p.getUniqueId(), 0L)) + 999) / 1000) + "초");
             return;
         }
         Player nearest = nearestEnemyInWorld(p);
@@ -825,10 +825,8 @@ public final class Main extends JavaPlugin implements Listener {
             p.sendMessage("§e이 차원에는 다른 팀 플레이어가 없습니다. " + elsewhere + "에서 사용해 주세요.");
             return;
         }
-        // Consume exactly one scrap only after a valid target is found.
-        item.setAmount(item.getAmount() - 1);
         locatorCooldown.put(p.getUniqueId(), now);
-        p.sendMessage("§6네더라이트 파편 1개를 사용했습니다. 10초 동안 불꽃이 방향을 안내합니다.");
+        p.sendMessage("§6망원경 추적 시작! 10초 동안 불꽃이 적의 방향을 안내합니다. 재사용 대기시간: 3분");
         final int[] elapsed = {0};
         final BukkitTask[] task = new BukkitTask[1];
         task[0] = Bukkit.getScheduler().runTaskTimer(this, () -> {
@@ -1087,6 +1085,18 @@ public final class Main extends JavaPlugin implements Listener {
     private void loadState() {
         if (!stateFile.exists()) return;
         YamlConfiguration y = YamlConfiguration.loadConfiguration(stateFile); startedAt = y.getLong("startedAt", -1);
+            ConfigurationSection chestSection = y.getConfigurationSection("teamChests");
+        if (chestSection != null) for (String id : chestSection.getKeys(false)) {
+            try {
+                UUID owner = UUID.fromString(id);
+                List<?> raw = y.getList("teamChests." + id, Collections.emptyList());
+                List<ItemStack> items = new ArrayList<>(Collections.nCopies(54, null));
+                for (int i = 0; i < Math.min(54, raw.size()); i++) {
+                    if (raw.get(i) instanceof ItemStack) items.set(i, ((ItemStack) raw.get(i)).clone());
+                }
+                savedTeamChests.put(owner, items);
+            } catch (IllegalArgumentException ex) { getLogger().warning("잘못된 팀 창고 UUID: " + id); }
+        }
         ConfigurationSection graceSection = y.getConfigurationSection("playerGraceStartedAt");
         if (graceSection != null) for (String id : graceSection.getKeys(false)) {
             try { playerGraceStartedAt.put(UUID.fromString(id), graceSection.getLong(id)); } catch (IllegalArgumentException ignored) { }

@@ -1,6 +1,6 @@
 name: SMP
 main: com.example.smp.Main
-version: 1.32.0
+version: 1.33.0
 api-version: '1.19'
 author: SMP
 commands:
