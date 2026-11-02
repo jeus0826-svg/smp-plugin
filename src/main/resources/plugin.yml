@@ -1,6 +1,6 @@
 name: SMP
 main: com.example.smp.Main
-version: 1.28.0
+version: 1.32.0
 api-version: '1.19'
 author: SMP
 commands:
@@ -22,7 +22,11 @@ commands:
   beacontp:
     description: 30분마다 한 번 소속 신호기 근처로 이동합니다
   buybeacon:
-    description: 구매할 때마다 다이아몬드 64개씩 증가하는 가격으로 신호기를 구매합니다
+    description: 구매할 때마다 다이아몬드 10개씩 증가하는 가격으로 신호기를 구매합니다
+  teamstorage:
+    description: 팀원끼리 공유하는 54칸 창고를 엽니다
+    usage: /teamstorage
+    aliases: [teamchest, 팀창고]
 permissions:
   smp.admin:
     description: SMP 관리자 권한

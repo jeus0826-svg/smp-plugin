@@ -48,6 +48,11 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.util.Vector;
 import org.bukkit.event.world.WorldLoadEvent;
 import org.bukkit.inventory.AnvilInventory;
 import org.bukkit.inventory.ItemStack;
@@ -67,11 +72,11 @@ import java.io.IOException;
 import java.util.*;
 
 public final class Main extends JavaPlugin implements Listener {
-    private static final int RADIUS = 50, BUFF_RADIUS = 500, DIAMOND_COST = 64;
+    private static final int RADIUS = 50, BUFF_RADIUS = 500, DIAMOND_COST = 10;
     private static final long COMBAT_TAG_MS = 3 * 60 * 1000L;
     private final Map<UUID, Long> combatTaggedUntil = new HashMap<>();
     private static final long BEACON_TP_COOLDOWN_MS = 30 * 60 * 1000L;
-    private static final long GRACE_MS = 60 * 60 * 1000L, BREAK_TICKS = 120 * 20L;
+    private static final long GRACE_MS = 24L * 60 * 60 * 1000L, BREAK_TICKS = 120 * 20L;
     private static final double BASE_SPEED = 4.0, SPECIAL_SPEED = 1024.0;
     private static final UUID SWORD_SPEED_MODIFIER_ID = UUID.fromString("5c27b0f4-fc1d-4e2a-9436-7d4b6d5e1040");
     // Protection X armor health bonuses (half of v1.4).
@@ -84,6 +89,10 @@ public final class Main extends JavaPlugin implements Listener {
     private final Random random = new Random();
     private final Map<UUID, Integer> dailyTrades = new HashMap<>();
     private final Map<UUID, Integer> beaconPurchases = new HashMap<>();
+    // Team storage is keyed by the final team leader UUID, not individual players.
+    private final Map<UUID, Inventory> teamChests = new HashMap<>();
+    private final Map<UUID, List<ItemStack>> savedTeamChests = new HashMap<>();
+    private final Map<UUID, Long> locatorCooldown = new HashMap<>();
     private final Map<UUID, Long> beaconTpLastUsed = new HashMap<>();
     private String tradeDate = LocalDate.now().toString();
     private final Set<UUID> potionWarning = new HashSet<>();
@@ -97,10 +106,14 @@ public final class Main extends JavaPlugin implements Listener {
     private final Map<UUID, List<Location>> barrierColumns = new HashMap<>();
     private final Map<UUID, UUID> merged = new HashMap<>();
     private final Set<UUID> manualTeamMembers = new HashSet<>();
+    // Offline team assignments are teleported exactly once at their next login.
+    private final Set<UUID> pendingTeamTeleports = new HashSet<>();
     private final Map<UUID, Boolean> previouslyActive = new HashMap<>();
     private final Map<UUID, BukkitTask> breakTasks = new HashMap<>();
     private final Map<String, Long> alerts = new HashMap<>();
     private final Set<UUID> penaltyApplied = new HashSet<>();
+    // Each player has their own 24-hour grace period starting at their first game entry.
+    private final Map<UUID, Long> playerGraceStartedAt = new HashMap<>();
     private long startedAt = -1;
     private File stateFile;
     @Override public void onEnable() {
@@ -113,6 +126,15 @@ public final class Main extends JavaPlugin implements Listener {
         Bukkit.getScheduler().runTaskTimer(this, this::forceHard, 20L, 200L);
         Bukkit.getScheduler().runTaskTimer(this, this::saveState, 1200L, 1200L);
         refreshTeamColors();
+        // Migrate old four-sided barrier columns to the single central column.
+        Bukkit.getScheduler().runTask(this, () -> {
+            for (Map.Entry<UUID, Location> entry : new HashMap<>(beacons).entrySet()) {
+                Location location = entry.getValue();
+                if (location.getWorld() != null && location.getBlock().getType() == Material.BEACON)
+                    createBarrierColumn(entry.getKey(), location);
+            }
+            saveState();
+        });
         getLogger().info("SMP 1.19.4 enabled");
     }
     @Override public void onDisable() {
@@ -170,7 +192,19 @@ public final class Main extends JavaPlugin implements Listener {
         if (!(e.getWhoClicked() instanceof Player)) return;
         Player p = (Player) e.getWhoClicked();
         if (e.getView().getTopInventory() instanceof MerchantInventory && e.getRawSlot() == 2) {
-            resetTradeDay();
+            ConfigurationSection chestSection = y.getConfigurationSection("teamChests");
+        if (chestSection != null) for (String id : chestSection.getKeys(false)) {
+            try {
+                UUID owner = UUID.fromString(id);
+                List<?> raw = y.getList("teamChests." + id, Collections.emptyList());
+                List<ItemStack> items = new ArrayList<>(Collections.nCopies(54, null));
+                for (int i = 0; i < Math.min(54, raw.size()); i++) {
+                    if (raw.get(i) instanceof ItemStack) items.set(i, ((ItemStack) raw.get(i)).clone());
+                }
+                savedTeamChests.put(owner, items);
+            } catch (IllegalArgumentException ex) { getLogger().warning("잘못된 팀 창고 UUID: " + id); }
+        }
+        resetTradeDay();
             if (dailyTrades.getOrDefault(p.getUniqueId(), 0) >= 20) {
                 e.setCancelled(true); p.sendMessage("§c주민 거래는 하루 최대 20회입니다."); return;
             }
@@ -252,9 +286,13 @@ public final class Main extends JavaPlugin implements Listener {
                     knownNames.put(memberId, args[i]);
                     sender.sendMessage("§a" + args[i] + " → " + args[0] + " 팀에 추가");
                     Player member = Bukkit.getPlayer(memberId);
-                    if (member != null) {
-                        member.sendMessage("§a" + args[0] + " 팀에 배정되었습니다.");
-                        if (startedAt != -1) teleportToTeam(member, true);
+                    if (startedAt != -1) {
+                        if (member != null) {
+                            member.sendMessage("§a" + args[0] + " 팀에 배정되었습니다.");
+                            teleportToTeam(member, true);
+                        } else {
+                            pendingTeamTeleports.add(memberId);
+                        }
                     }
                 }
                 refreshTeamColors(); saveState(); return true;
@@ -302,14 +340,15 @@ public final class Main extends JavaPlugin implements Listener {
                 cancelAllBreaks();
                 for (UUID owner : new HashSet<>(barrierColumns.keySet())) removeBarrierColumn(owner);
                 combatTaggedUntil.clear();
-                initialized.clear(); everPlaced.clear(); permanentlyLost.clear(); beacons.clear(); starts.clear(); beaconPurchases.clear(); beaconTpLastUsed.clear();
-                beaconOwners.clear(); previouslyActive.clear(); alerts.clear(); penaltyApplied.clear(); teamSpawns.clear();
+                pendingTeamTeleports.clear(); initialized.clear(); everPlaced.clear(); permanentlyLost.clear(); beacons.clear(); starts.clear(); beaconPurchases.clear(); beaconTpLastUsed.clear();
+                beaconOwners.clear(); previouslyActive.clear(); alerts.clear(); penaltyApplied.clear(); playerGraceStartedAt.clear(); teamSpawns.clear();
+                // Do not erase shared team storage during a new match; it persists unless reset manually.
                 // Keep teams configured before /startgame. Captured/defeated teams reset.
                 merged.entrySet().removeIf(entry -> !manualTeamMembers.contains(entry.getKey()));
                 permanentlyLost.clear();
                 startedAt = System.currentTimeMillis();
                 saveState();
-                Bukkit.broadcastMessage("§aSMP 시작! 60분 안에 신호기를 설치하세요.");
+                Bukkit.broadcastMessage("§aSMP 시작! 각 플레이어는 게임 참여 후 24시간 안에 팀 신호기를 설치해야 합니다.");
                 for (Player p : Bukkit.getOnlinePlayers()) initializePlayer(p);
                 refreshTeamColors();
                 return true;
@@ -334,6 +373,9 @@ public final class Main extends JavaPlugin implements Listener {
                     p.sendMessage("§a신호기 근처로 이동했습니다. 다음 사용은 30분 후 가능합니다.");
                 } else p.sendMessage("§c순간이동에 실패했습니다. 재사용 대기시간은 적용되지 않습니다.");
                 return true;
+            case "teamstorage":
+                if (!(sender instanceof Player)) { sender.sendMessage("플레이어 전용 명령어입니다."); return true; }
+                openTeamStorage((Player) sender); return true;
             case "buybeacon":
                 if (!(sender instanceof Player)) { sender.sendMessage("플레이어 전용입니다."); return true; }
                 buy((Player) sender); return true;
@@ -347,7 +389,8 @@ public final class Main extends JavaPlugin implements Listener {
             knownNames.put(p.getUniqueId(), p.getName());
             if (startedAt != -1) {
                 if (!initialized.contains(p.getUniqueId())) initializePlayer(p);
-                else if (beacons.containsKey(finalOwner(p.getUniqueId())) || starts.get(p.getUniqueId()) == null || !finalOwner(p.getUniqueId()).equals(p.getUniqueId())) teleportToTeam(p, false);
+                else if (pendingTeamTeleports.contains(p.getUniqueId())) teleportToTeam(p, true);
+                // Returning players otherwise keep their vanilla logout location.
             }
             refreshTeamColors();
             applySword(p); applyArmorBonuses(p); applyBootsSpeed(p); applyPenalty(p);
@@ -397,6 +440,8 @@ public final class Main extends JavaPlugin implements Listener {
         if (destination == null) destination = spawn.clone();
         if (!p.teleport(destination)) return;
         initialized.add(p.getUniqueId());
+        playerGraceStartedAt.putIfAbsent(p.getUniqueId(), System.currentTimeMillis());
+        pendingTeamTeleports.remove(p.getUniqueId());
         starts.put(p.getUniqueId(), spawn.clone());
         if (p.getUniqueId().equals(owner)) {
             give(p, new ItemStack(Material.BEACON));
@@ -432,8 +477,7 @@ public final class Main extends JavaPlugin implements Listener {
             String id = "smp_" + owner.toString().replace("-", "").substring(0, 12);
             Team team = board.registerNewTeam(id);
             org.bukkit.ChatColor color = org.bukkit.ChatColor.valueOf(
-    TEAM_PALETTE[teamColors.get(owner) % TEAM_PALETTE.length].getName().toUpperCase()
-);
+                TEAM_PALETTE[teamColors.get(owner) % TEAM_PALETTE.length].getName().toUpperCase(Locale.ROOT));
             team.setColor(color); team.setPrefix(color.toString());
             for (Map.Entry<UUID, String> entry : knownNames.entrySet())
                 if (finalOwner(entry.getKey()).equals(owner)) team.addEntry(entry.getValue());
@@ -459,6 +503,7 @@ public final class Main extends JavaPlugin implements Listener {
         }
         if (p.teleport(destination.clone())) {
             initialized.add(p.getUniqueId());
+            pendingTeamTeleports.remove(p.getUniqueId());
             starts.put(p.getUniqueId(), teamSpawns.getOrDefault(owner, destination).clone());
             p.sendMessage(newlyAdded ? "§a새 팀 위치로 이동했습니다." : "§a팀 신호기 또는 팀 스폰으로 이동했습니다.");
             saveState();
@@ -522,7 +567,7 @@ public final class Main extends JavaPlugin implements Listener {
         Location l = block.getLocation();
         beacons.put(id, l); beaconOwners.put(key(l), id); everPlaced.add(id); previouslyActive.put(id, false);
         penaltyApplied.remove(id); p.removePotionEffect(PotionEffectType.WEAKNESS);
-        p.sendMessage("신호기 등록 완료! §b광선 통로 주변에 배리어 기둥을 생성합니다. 성급함 III 범위: 500블록.");
+        p.sendMessage("신호기 등록 완료! §b신호기 바로 위에만 방벽 기둥을 생성합니다. 성급함 III 범위: 500블록.");
         Bukkit.getScheduler().runTask(this, () -> {
             if (l.getBlock().getType() == Material.BEACON && id.equals(beaconOwners.get(key(l)))) {
                 createBarrierColumn(id, l);
@@ -619,10 +664,18 @@ public final class Main extends JavaPlugin implements Listener {
         }
     }
     private void applyPenalty(Player p) {
-        if (startedAt == -1 || System.currentTimeMillis() - startedAt < GRACE_MS) return;
+        if (startedAt == -1 || !initialized.contains(p.getUniqueId())) return;
         UUID id = p.getUniqueId();
-        if (everPlaced.contains(finalOwner(id))) return;
-        if (penaltyApplied.add(id)) p.sendMessage("§c60분 안에 신호기를 설치하지 않아 나약함이 적용되었습니다.");
+        UUID owner = finalOwner(id);
+        // A placed team beacon protects all members, even late joiners.
+        if (everPlaced.contains(owner) || beacons.containsKey(owner)) {
+            if (penaltyApplied.remove(id)) p.removePotionEffect(PotionEffectType.WEAKNESS);
+            return;
+        }
+        // Legacy players without a saved entry time use the original match start.
+        long joinedAt = playerGraceStartedAt.getOrDefault(id, startedAt);
+        if (System.currentTimeMillis() - joinedAt < GRACE_MS) return;
+        if (penaltyApplied.add(id)) p.sendMessage("§c참여 후 24시간 안에 팀 신호기를 설치하지 않아 나약함이 적용되었습니다.");
         p.addPotionEffect(new PotionEffect(PotionEffectType.WEAKNESS, 50, 0, false, false));
     }
     private void applyZone(Player p) {
@@ -657,26 +710,20 @@ public final class Main extends JavaPlugin implements Listener {
                 && block.getState() instanceof Beacon
                 && ((Beacon) block.getState()).getTier() >= 1;
     }
-    // Barrier is opaque in vanilla Minecraft. Keep the beacon's vertical beam at the
-    // center unobstructed; build four adjacent, invisible barrier rails around it.
-    // Only replace AIR and remember every block we created for safe restoration.
+    // One vertical column directly over the beacon, no adjacent columns.
+    // NOTE: barriers are opaque, so the vanilla visible beacon beam is blocked.
     private void createBarrierColumn(UUID owner, Location beacon) {
         removeBarrierColumn(owner);
         World w = beacon.getWorld();
         if (w == null) return;
         List<Location> created = new ArrayList<>();
-        int[][] offsets = {{1,0},{-1,0},{0,1},{0,-1}};
         for (int y = beacon.getBlockY() + 1; y < w.getMaxHeight(); y++) {
-            for (int[] offset : offsets) {
-                Block block = w.getBlockAt(beacon.getBlockX() + offset[0], y, beacon.getBlockZ() + offset[1]);
-                if (block.getType() != Material.AIR) continue;
-                block.setType(Material.BARRIER, false);
-                created.add(block.getLocation());
-            }
+            Block block = w.getBlockAt(beacon.getBlockX(), y, beacon.getBlockZ());
+            if (block.getType() != Material.AIR) continue;
+            block.setType(Material.BARRIER, false);
+            created.add(block.getLocation());
         }
         barrierColumns.put(owner, created);
-        // Solid blocks in the central shaft are intentionally left untouched.
-        // Players must remove them for the beacon beam to reach the sky.
     }
     private void removeBarrierColumn(UUID owner) {
         List<Location> locations = barrierColumns.remove(owner);
@@ -734,13 +781,96 @@ public final class Main extends JavaPlugin implements Listener {
     @EventHandler public void onRespawn(PlayerRespawnEvent e) {
         Player p = e.getPlayer();
         UUID owner = finalOwner(p.getUniqueId());
-        Location target = teamDestination(owner);
-        if (target == null) target = starts.get(p.getUniqueId());
+        // Installed team beacon overrides bed spawn; otherwise respect vanilla bed spawn.
+        Location target = null;
+        Location installed = beacons.get(owner);
+        if (installed != null && installed.getWorld() != null && installed.getBlock().getType() == Material.BEACON) {
+            target = safeNear(installed);
+        } else if (!e.isBedSpawn()) {
+            target = teamSpawns.get(owner);
+            if (target == null) target = starts.get(p.getUniqueId());
+        }
         if (target != null && target.getWorld() != null) {
             Location safe = clearForPlayer(target) ? target : safeNear(target);
             if (safe != null && clearForPlayer(safe)) e.setRespawnLocation(safe);
         }
         Bukkit.getScheduler().runTaskLater(this, () -> { if (p.isOnline()) { applySword(p); applyArmorBonuses(p); applyBootsSpeed(p); } }, 2L);
+    }
+    private void openTeamStorage(Player p) {
+        UUID owner = finalOwner(p.getUniqueId());
+        // Require an assigned team of at least two players, not a solo inventory.
+        boolean assigned = manualTeamMembers.contains(p.getUniqueId()) ||
+                merged.containsValue(owner) || teamColors.containsKey(owner);
+        if (!assigned) { p.sendMessage("§c팀에 배정된 플레이어만 공유 창고를 열 수 있습니다."); return; }
+        Inventory inv = teamChests.get(owner);
+        if (inv == null) {
+            inv = Bukkit.createInventory(null, 54, "팀 공유 창고 (54칸)");
+            List<ItemStack> saved = savedTeamChests.get(owner);
+            if (saved != null) for (int i = 0; i < Math.min(54, saved.size()); i++) {
+                if (saved.get(i) != null) inv.setItem(i, saved.get(i).clone());
+            }
+            teamChests.put(owner, inv);
+        }
+        p.openInventory(inv);
+    }
+    @EventHandler public void onTeamStorageClose(InventoryCloseEvent e) {
+        if (teamChests.containsValue(e.getInventory())) saveState();
+    }
+    @EventHandler(ignoreCancelled = true)
+    public void onNetheriteLocator(PlayerInteractEvent e) {
+        if (e.getHand() != EquipmentSlot.HAND) return;
+        if (e.getAction() != Action.RIGHT_CLICK_AIR && e.getAction() != Action.RIGHT_CLICK_BLOCK) return;
+        ItemStack item = e.getItem();
+        if (item == null || item.getType() != Material.NETHERITE_SCRAP) return;
+        e.setCancelled(true);
+        Player p = e.getPlayer();
+        long now = System.currentTimeMillis();
+        if (now - locatorCooldown.getOrDefault(p.getUniqueId(), 0L) < 10000L) {
+            p.sendMessage("§e추적 불꽃이 아직 유지되고 있습니다.");
+            return;
+        }
+        Player nearest = nearestEnemyInWorld(p);
+        if (nearest == null) {
+            World.Environment env = p.getWorld().getEnvironment();
+            String elsewhere = env == World.Environment.NETHER ? "오버월드나 엔드" :
+                    env == World.Environment.THE_END ? "네더나 오버월드" : "네더나 엔드";
+            p.sendMessage("§e이 차원에는 다른 팀 플레이어가 없습니다. " + elsewhere + "에서 사용해 주세요.");
+            return;
+        }
+        // Consume exactly one scrap only after a valid target is found.
+        item.setAmount(item.getAmount() - 1);
+        locatorCooldown.put(p.getUniqueId(), now);
+        p.sendMessage("§6네더라이트 파편 1개를 사용했습니다. 10초 동안 불꽃이 방향을 안내합니다.");
+        final int[] elapsed = {0};
+        final BukkitTask[] task = new BukkitTask[1];
+        task[0] = Bukkit.getScheduler().runTaskTimer(this, () -> {
+            if (!p.isOnline() || elapsed[0] >= 200) { task[0].cancel(); return; }
+            Player target = nearestEnemyInWorld(p);
+            if (target == null) { task[0].cancel(); return; }
+            Location from = p.getEyeLocation();
+            Location to = target.getEyeLocation();
+            Vector direction = to.toVector().subtract(from.toVector());
+            if (direction.lengthSquared() > 0.0001) {
+                direction.normalize();
+                for (double d = 0.5; d <= 4.0; d += 0.4) {
+                    Location point = from.clone().add(direction.clone().multiply(d));
+                    p.spawnParticle(Particle.FLAME, point, 2, 0.04, 0.04, 0.04, 0.001);
+                }
+            }
+            elapsed[0] += 5;
+        }, 0L, 5L);
+    }
+
+    private Player nearestEnemyInWorld(Player p) {
+        UUID ownTeam = finalOwner(p.getUniqueId());
+        Player nearest = null;
+        double best = Double.MAX_VALUE;
+        for (Player other : p.getWorld().getPlayers()) {
+            if (other.equals(p) || other.isDead() || finalOwner(other.getUniqueId()).equals(ownTeam)) continue;
+            double distance = other.getLocation().distanceSquared(p.getLocation());
+            if (distance < best) { best = distance; nearest = other; }
+        }
+        return nearest;
     }
     private void buy(Player p) {
         UUID id = p.getUniqueId();
@@ -935,10 +1065,19 @@ public final class Main extends JavaPlugin implements Listener {
     private void saveState() {
         if (stateFile == null) return;
         YamlConfiguration y = new YamlConfiguration(); y.set("startedAt", startedAt);
+        for (Map.Entry<UUID, Long> entry : playerGraceStartedAt.entrySet()) y.set("playerGraceStartedAt." + entry.getKey(), entry.getValue());
         y.set("tradeDate", tradeDate);
         for (Map.Entry<UUID, Integer> trade : dailyTrades.entrySet()) y.set("dailyTrades." + trade.getKey(), trade.getValue());
         for (Map.Entry<UUID, Long> tp : beaconTpLastUsed.entrySet()) y.set("beaconTpLastUsed." + tp.getKey(), tp.getValue());
         for (Map.Entry<UUID, Integer> purchase : beaconPurchases.entrySet()) y.set("beaconPurchases." + purchase.getKey(), purchase.getValue());
+        // Save all 54 slots, including empty slots, without moving items out of inventories.
+        Set<UUID> chestOwners = new HashSet<>(savedTeamChests.keySet());
+        chestOwners.addAll(teamChests.keySet());
+        for (UUID owner : chestOwners) {
+            Inventory inv = teamChests.get(owner);
+            List<ItemStack> items = inv == null ? savedTeamChests.get(owner) : Arrays.asList(inv.getContents());
+            y.set("teamChests." + owner, items);
+        }
         for (UUID id : initialized) y.set("initialized." + id, true);
         for (UUID id : everPlaced) y.set("everPlaced." + id, true);
         for (UUID id : permanentlyLost) y.set("permanentlyLost." + id, true);
@@ -946,6 +1085,7 @@ public final class Main extends JavaPlugin implements Listener {
         for (Map.Entry<UUID, String> e : knownNames.entrySet()) y.set("knownNames." + e.getKey(), e.getValue());
         for (Map.Entry<UUID, Integer> e : teamColors.entrySet()) y.set("teamColors." + e.getKey(), e.getValue());
         for (UUID id : manualTeamMembers) y.set("manualTeamMembers." + id, true);
+        for (UUID id : pendingTeamTeleports) y.set("pendingTeamTeleports." + id, true);
         for (Map.Entry<UUID, Location> e : beacons.entrySet()) {
             y.set("beacons." + e.getKey() + ".location", e.getValue());
             y.set("beacons." + e.getKey() + ".active", previouslyActive.getOrDefault(e.getKey(), false));
@@ -959,6 +1099,10 @@ public final class Main extends JavaPlugin implements Listener {
     private void loadState() {
         if (!stateFile.exists()) return;
         YamlConfiguration y = YamlConfiguration.loadConfiguration(stateFile); startedAt = y.getLong("startedAt", -1);
+        ConfigurationSection graceSection = y.getConfigurationSection("playerGraceStartedAt");
+        if (graceSection != null) for (String id : graceSection.getKeys(false)) {
+            try { playerGraceStartedAt.put(UUID.fromString(id), graceSection.getLong(id)); } catch (IllegalArgumentException ignored) { }
+        }
         tradeDate = y.getString("tradeDate", LocalDate.now().toString());
         ConfigurationSection tradeSection = y.getConfigurationSection("dailyTrades");
         if (tradeSection != null) for (String id : tradeSection.getKeys(false)) {
@@ -975,6 +1119,7 @@ public final class Main extends JavaPlugin implements Listener {
         resetTradeDay();
         loadIds(y, "initialized", initialized); loadIds(y, "everPlaced", everPlaced); loadIds(y, "permanentlyLost", permanentlyLost);
         loadIds(y, "manualTeamMembers", manualTeamMembers);
+        loadIds(y, "pendingTeamTeleports", pendingTeamTeleports);
         ConfigurationSection namesSection = y.getConfigurationSection("knownNames");
         if (namesSection != null) for (String id : namesSection.getKeys(false)) {
             try { knownNames.put(UUID.fromString(id), namesSection.getString(id)); } catch (IllegalArgumentException ignored) { }
