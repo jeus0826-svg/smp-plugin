@@ -192,18 +192,6 @@ public final class Main extends JavaPlugin implements Listener {
         if (!(e.getWhoClicked() instanceof Player)) return;
         Player p = (Player) e.getWhoClicked();
         if (e.getView().getTopInventory() instanceof MerchantInventory && e.getRawSlot() == 2) {
-            ConfigurationSection chestSection = y.getConfigurationSection("teamChests");
-        if (chestSection != null) for (String id : chestSection.getKeys(false)) {
-            try {
-                UUID owner = UUID.fromString(id);
-                List<?> raw = y.getList("teamChests." + id, Collections.emptyList());
-                List<ItemStack> items = new ArrayList<>(Collections.nCopies(54, null));
-                for (int i = 0; i < Math.min(54, raw.size()); i++) {
-                    if (raw.get(i) instanceof ItemStack) items.set(i, ((ItemStack) raw.get(i)).clone());
-                }
-                savedTeamChests.put(owner, items);
-            } catch (IllegalArgumentException ex) { getLogger().warning("잘못된 팀 창고 UUID: " + id); }
-        }
         resetTradeDay();
             if (dailyTrades.getOrDefault(p.getUniqueId(), 0) >= 20) {
                 e.setCancelled(true); p.sendMessage("§c주민 거래는 하루 최대 20회입니다."); return;
