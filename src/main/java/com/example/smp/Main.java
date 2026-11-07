@@ -29,6 +29,7 @@ import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.inventory.PrepareAnvilEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
@@ -384,6 +385,22 @@ public final class Main extends JavaPlugin implements Listener {
             default: return false;
         }
     }
+    // If the player has no bed/respawn anchor and no team beacon yet,
+    // return to the original /startgame spawn instead of world spawn.
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onPlayerRespawn(PlayerRespawnEvent e) {
+        if (startedAt == -1 || e.isBedSpawn() || e.isAnchorSpawn()) return;
+        Player player = e.getPlayer();
+        UUID owner = finalOwner(player.getUniqueId());
+        Location beacon = beacons.get(owner);
+        if (beacon != null && beacon.getWorld() != null
+                && beacon.getBlock().getType() == Material.BEACON) return;
+        Location original = starts.get(player.getUniqueId());
+        if (original == null) original = teamSpawns.get(owner);
+        if (original == null || original.getWorld() == null) return;
+        e.setRespawnLocation(original.clone());
+    }
+
     @EventHandler public void onJoin(PlayerJoinEvent e) {
         Player p = e.getPlayer();
         Bukkit.getScheduler().runTaskLater(this, () -> {

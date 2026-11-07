@@ -21,3 +21,8 @@ GitHub에 소스를 업로드한 뒤 Actions에서 빌드합니다. 서버를 �
 - 엔더 드래곤 첫 처치 시 모든 차원 어려움(HARD) 고정, 전체 공지: 이제부터는 난이도가 어려움으로 고정됩니다
 - 재시작 후에도 상태 유지, /startgame으로 새 게임 시작하면 초기화
 - /smphelp에 난이도 규칙 안내 추가
+
+## v1.39 respawn fallback
+- After /startgame, if a player dies without a valid bed/respawn anchor and without a placed team beacon, respawn at their saved initial team spawn rather than the world spawn.
+- Existing bed/anchor respawn and logout/login location remain unchanged.
+- Existing saved starts and teamSpawns are reused.
