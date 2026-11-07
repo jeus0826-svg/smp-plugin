@@ -107,15 +107,16 @@ public final class Main extends JavaPlugin implements Listener {
     // Each player has their own 24-hour grace period starting at their first game entry.
     private final Map<UUID, Long> playerGraceStartedAt = new HashMap<>();
     private long startedAt = -1;
+    private boolean dragonDefeated = false;
     private File stateFile;
     @Override public void onEnable() {
         stateFile = new File(getDataFolder(), "state.yml");
         loadState();
         Bukkit.getPluginManager().registerEvents(this, this);
-        forceHard();
+        enforceGameDifficulty();
         Bukkit.getScheduler().runTaskTimer(this, this::enforcePotionLimit, 20L, 20L);
         Bukkit.getScheduler().runTaskTimer(this, this::tick, 20L, 20L);
-        Bukkit.getScheduler().runTaskTimer(this, this::forceHard, 20L, 200L);
+        Bukkit.getScheduler().runTaskTimer(this, this::enforceGameDifficulty, 20L, 200L);
         Bukkit.getScheduler().runTaskTimer(this, this::saveState, 1200L, 1200L);
         refreshTeamColors();
         // Migrate old four-sided barrier columns to the single central column.
@@ -143,12 +144,18 @@ public final class Main extends JavaPlugin implements Listener {
         sender.sendMessage("§e신호기 귀환: §f/beacontp, 30분 쿨타임");
         sender.sendMessage("§e침입 감지: §f신호기 반경 50블록 내 적 접근 시 경보 및 디버프");
         sender.sendMessage("§6========== SMP 게임 안내 (2/2) ==========");
+        sender.sendMessage("§e난이도: §f처음에는 보통, 엔더 드래곤 최초 처치 후 어려움으로 영구 고정");
         sender.sendMessage("§e특수 장비: §f날카로움 X 검 공격 속도 증가");
         sender.sendMessage("§e보호 X 방어구: §f투구 체력 +5, 흉갑 +20, 레깅스 +5, 부츠 신속 I");
         sender.sendMessage("§e기타 규칙: §f사망 시 경험치 전량 드롭, 포션·거래·인챈트 제한");
     }
-    private void forceHard() { for (World w : Bukkit.getWorlds()) w.setDifficulty(Difficulty.HARD); }
-    @EventHandler public void onWorldLoad(WorldLoadEvent e) { e.getWorld().setDifficulty(Difficulty.HARD); }
+    private void enforceGameDifficulty() {
+        Difficulty target = dragonDefeated ? Difficulty.HARD : Difficulty.NORMAL;
+        for (World w : Bukkit.getWorlds()) if (w.getDifficulty() != target) w.setDifficulty(target);
+    }
+    @EventHandler public void onWorldLoad(WorldLoadEvent e) {
+        e.getWorld().setDifficulty(dragonDefeated ? Difficulty.HARD : Difficulty.NORMAL);
+    }
 
     // v1.12 balance patch
     private boolean banned(Enchantment e) {
@@ -343,6 +350,8 @@ public final class Main extends JavaPlugin implements Listener {
                 merged.entrySet().removeIf(entry -> !manualTeamMembers.contains(entry.getKey()));
                 permanentlyLost.clear();
                 startedAt = System.currentTimeMillis();
+                dragonDefeated = false;
+                enforceGameDifficulty();
                 saveState();
                 Bukkit.broadcastMessage("§aSMP 시작! 각 플레이어는 게임 참여 후 24시간 안에 팀 신호기를 설치해야 합니다.");
                 for (Player p : Bukkit.getOnlinePlayers()) initializePlayer(p);
@@ -910,6 +919,12 @@ public final class Main extends JavaPlugin implements Listener {
     }
     @EventHandler public void onDragonDeath(EntityDeathEvent e) {
         if (!(e.getEntity() instanceof EnderDragon)) return;
+        if (!dragonDefeated) {
+            dragonDefeated = true;
+            enforceGameDifficulty();
+            Bukkit.broadcastMessage("§c이제부터는 난이도가 어려움으로 고정됩니다");
+            saveState();
+        }
         // Allow vanilla to generate the End Gateway to the outer islands.
         // Applies to both the naturally spawned dragon and all respawned dragons.
         // Give the killing player 50 experience LEVELS, not 50 XP points.
@@ -972,7 +987,7 @@ public final class Main extends JavaPlugin implements Listener {
     private String key(Location l) { return l.getWorld().getUID() + ":" + l.getBlockX() + ":" + l.getBlockY() + ":" + l.getBlockZ(); }
     private void saveState() {
         if (stateFile == null) return;
-        YamlConfiguration y = new YamlConfiguration(); y.set("startedAt", startedAt);
+        YamlConfiguration y = new YamlConfiguration(); y.set("startedAt", startedAt); y.set("dragonDefeated", dragonDefeated);
         for (Map.Entry<UUID, Long> entry : playerGraceStartedAt.entrySet()) y.set("playerGraceStartedAt." + entry.getKey(), entry.getValue());
         y.set("tradeDate", tradeDate);
         for (Map.Entry<UUID, Integer> trade : dailyTrades.entrySet()) y.set("dailyTrades." + trade.getKey(), trade.getValue());
@@ -999,6 +1014,7 @@ public final class Main extends JavaPlugin implements Listener {
     private void loadState() {
         if (!stateFile.exists()) return;
         YamlConfiguration y = YamlConfiguration.loadConfiguration(stateFile); startedAt = y.getLong("startedAt", -1);
+        dragonDefeated = y.getBoolean("dragonDefeated", false);
         ConfigurationSection graceSection = y.getConfigurationSection("playerGraceStartedAt");
         if (graceSection != null) for (String id : graceSection.getKeys(false)) {
             try { playerGraceStartedAt.put(UUID.fromString(id), graceSection.getLong(id)); } catch (IllegalArgumentException ignored) { }
