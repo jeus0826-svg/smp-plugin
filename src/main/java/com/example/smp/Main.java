@@ -134,6 +134,25 @@ public final class Main extends JavaPlugin implements Listener {
         for (Player p : Bukkit.getOnlinePlayers()) { removeSwordSpeed(p); removeArmorBonuses(p); removeBootsSpeed(p); }
         saveState();
     }
+    private void sendSmpHelp(CommandSender sender) {
+        sender.sendMessage("§6========== SMP 게임 안내 (1/3) ==========");
+        sender.sendMessage("§e게임 시작: §f관리자 /startgame, 난이도 HARD, 팀별 랜덤 시작 위치");
+        sender.sendMessage("§e팀 설정: §f/teamset <팀장> <팀원...> (관리자), 같은 팀은 닉네임 색상 공유");
+        sender.sendMessage("§e팀 관리: §f/teamleader, /teamclear (관리자)");
+        sender.sendMessage("§e재접속: §f로그아웃 위치 유지, 새 팀 합류 시 한 번 팀 위치로 이동");
+        sender.sendMessage("§6========== SMP 게임 안내 (2/3) ==========");
+        sender.sendMessage("§e신호기 제한: §f참여 후 현실 시간 24시간 안에 팀 신호기 설치, 미설치 시 나약함");
+        sender.sendMessage("§e신호기 설치: §f오버월드 해수면 아래, 팀당 하나, 활성 상태 유지 필요");
+        sender.sendMessage("§e신호기 효과: §f활성화 시 같은 차원의 반경 500블록 팀원에게 성급함 III");
+        sender.sendMessage("§e신호기 구매: §f/buybeacon, 다이아 10개부터 구매마다 10개씩 증가");
+        sender.sendMessage("§e신호기 귀환: §f/beacontp, 30분 쿨타임");
+        sender.sendMessage("§e침입 감지: §f신호기 반경 50블록 내 적 접근 시 경보 및 디버프");
+        sender.sendMessage("§6========== SMP 게임 안내 (3/3) ==========");
+        sender.sendMessage("§e특수 장비: §f날카로움 X 검 공격 속도 증가");
+        sender.sendMessage("§e보호 X 방어구: §f투구 체력 +5, 흉갑 +20, 레깅스 +5, 부츠 신속 I");
+        sender.sendMessage("§e기타 규칙: §f사망 시 경험치 전량 드롭, 포션·거래·인챈트 제한");
+        sender.sendMessage("§7팀 창고·망원경 추적·커스텀 리스폰 기능은 제거됨");
+    }
     private void forceHard() { for (World w : Bukkit.getWorlds()) w.setDifficulty(Difficulty.HARD); }
     @EventHandler public void onWorldLoad(WorldLoadEvent e) { e.getWorld().setDifficulty(Difficulty.HARD); }
 
@@ -241,6 +260,9 @@ public final class Main extends JavaPlugin implements Listener {
 
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         switch (command.getName().toLowerCase(Locale.ROOT)) {
+            case "smphelp":
+                sendSmpHelp(sender);
+                return true;
             case "teamset":
                 if (!sender.hasPermission("smp.admin")) { sender.sendMessage("권한이 없습니다."); return true; }
                 if (args.length < 2) { sender.sendMessage("사용법: /teamset <팀장> <팀원1> [팀원2] ... (오프라인 가능)"); return true; }
@@ -626,8 +648,17 @@ public final class Main extends JavaPlugin implements Listener {
             Block block = l.getBlock();
             if (block.getType() != Material.BEACON) { unregisterBeacon(owner, false); continue; }
             boolean active = block.getState() instanceof Beacon && ((Beacon) block.getState()).getTier() > 0;
-            if (active) previouslyActive.put(owner, true);
-            else if (previouslyActive.getOrDefault(owner, false)) {
+            if (active) {
+                if (!previouslyActive.getOrDefault(owner, false)) {
+                    previouslyActive.put(owner, true);
+                    for (Player teammate : Bukkit.getOnlinePlayers()) {
+                        if (finalOwner(teammate.getUniqueId()).equals(owner)) {
+                            teammate.sendMessage("§a[신호기] 팀 신호기가 활성화되었습니다! 같은 차원에서 신호기 반경 500블록 안의 팀원에게 성급함 III이 적용됩니다.");
+                        }
+                    }
+                    saveState();
+                }
+            } else if (previouslyActive.getOrDefault(owner, false)) {
                 block.setType(Material.AIR, false); unregisterBeacon(owner, false);
                 Player p = Bukkit.getPlayer(owner); if (p != null) p.sendMessage("§c활성화된 신호기가 비활성화되어 사라졌습니다.");
             }
