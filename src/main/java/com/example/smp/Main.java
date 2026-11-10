@@ -954,6 +954,9 @@ public final class Main extends JavaPlugin implements Listener {
     }
     @EventHandler public void onAnvil(PrepareAnvilEvent e) {
         AnvilInventory inv = e.getInventory();
+        // Allow survival players to use anvils above the vanilla 39-level limit.
+        // The actual XP cost is still charged by Minecraft.
+        inv.setMaximumRepairCost(1000000);
         ItemStack left = inv.getItem(0), right = inv.getItem(1);
         if (left == null || right == null || left.getType() == Material.AIR) return;
         if (containsBanned(left) || containsBanned(right) || containsBanned(e.getResult())) {
@@ -974,15 +977,17 @@ public final class Main extends JavaPlugin implements Listener {
         }
         if (changed) {
             e.setResult(result);
-            // 목표 레벨 5=40, 6=50, ... 10=90. 여러 인챈트가 합쳐지면 높은 레벨을 기준으로 계산.
+            // Same-level merging: V+V -> VI costs 50, VI+VI -> VII costs 60, ... IX+IX -> X costs 90.
+            // Other anvil operations keep their vanilla calculated costs.
             int cost = (targetLevel - 1) * 10;
-            inv.setMaximumRepairCost(Math.max(40, cost + 1));
             inv.setRepairCost(cost);
-        } else if (right.getType() == Material.ENCHANTED_BOOK) {
-            // 레벨을 올리지 않는 일반 인챈트 책 적용은 기존 비용을 유지.
-            inv.setMaximumRepairCost(40);
-            inv.setRepairCost(39);
         }
+    }
+    // Some server implementations reset the maximum after prepare events.
+    // Reapply only the ceiling, never force a flat 39-level repair cost.
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void keepAnvilLimitOpen(PrepareAnvilEvent e) {
+        e.getInventory().setMaximumRepairCost(1000000);
     }
     private int enchantLevel(ItemStack item, Enchantment enchant) {
         if (item.getType() == Material.ENCHANTED_BOOK && item.getItemMeta() instanceof EnchantmentStorageMeta)

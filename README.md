@@ -26,3 +26,13 @@ GitHub에 소스를 업로드한 뒤 Actions에서 빌드합니다. 서버를 �
 - After /startgame, if a player dies without a valid bed/respawn anchor and without a placed team beacon, respawn at their saved initial team spawn rather than the world spawn.
 - Existing bed/anchor respawn and logout/login location remain unchanged.
 - Existing saved starts and teamSpawns are reused.
+
+
+## v1.40 모루 비용 제한 해제
+- 모루의 `너무 비쌉니다!` 40레벨 제한을 해제합니다.
+- 기존 인챈트 합성 비용과 실제 경험치 소모는 유지합니다.
+- 날카로움 X, 보호 X 및 다른 SMP 규칙은 그대로 유지합니다.
+
+## v1.41 모루 비용
+- 보호 V+V: 50레벨, VI+VI: 60레벨, VII+VII: 70레벨, VIII+VIII: 80레벨, IX+IX: 90레벨. 날카로움도 동일.
+- 일반 모루 작업은 바닐라 비용 유지, 39레벨 고정 비용 없음. 모루 최대 비용 제한은 1,000,000으로 확장.
