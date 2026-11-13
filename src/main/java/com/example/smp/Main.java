@@ -84,6 +84,8 @@ public final class Main extends JavaPlugin implements Listener {
     private static final UUID PROT10_LEGS_MODIFIER_ID = UUID.fromString("5c27b0f4-fc1d-4e2a-9436-7d4b6d5e1030");
     private final Set<UUID> speedBootsApplied = new HashSet<>();
     private final Random random = new Random();
+    // True costs for operations whose client-visible anvil cost must stay below 40.
+    private final Map<AnvilInventory, Integer> anvilTrueCosts = new WeakHashMap<>();
     private final Map<UUID, Integer> dailyTrades = new HashMap<>();
     private final Map<UUID, Integer> beaconPurchases = new HashMap<>();
     private final Map<UUID, Long> beaconTpLastUsed = new HashMap<>();
@@ -637,6 +639,13 @@ public final class Main extends JavaPlugin implements Listener {
             unregisterBeacon(owner, true);
             merged.put(owner, winner); manualTeamMembers.remove(owner); permanentlyLost.add(owner);
             for (Player online : Bukkit.getOnlinePlayers()) {
+                if (finalOwner(online.getUniqueId()).equals(winner)) {
+                    online.removePotionEffect(PotionEffectType.WEAKNESS);
+                    penaltyApplied.remove(online.getUniqueId());
+                }
+            }
+            refreshTeamColors();
+            for (Player online : Bukkit.getOnlinePlayers()) {
                 if (finalOwner(online.getUniqueId()).equals(winner)) online.sendMessage("§a신호기 점령 성공!");
             }
             Player victim = Bukkit.getPlayer(owner);
@@ -652,7 +661,15 @@ public final class Main extends JavaPlugin implements Listener {
         Location l = beacons.remove(owner);
         if (l != null) beaconOwners.remove(key(l));
         previouslyActive.remove(owner);
-        if (!destroyedByEnemy) { Player p = Bukkit.getPlayer(owner); if (p != null) p.sendMessage("신호기가 없어졌습니다. /buybeacon으로 재구매할 수 있습니다."); }
+        if (!destroyedByEnemy) {
+            for (Player teammate : Bukkit.getOnlinePlayers()) {
+                if (finalOwner(teammate.getUniqueId()).equals(owner)) {
+                    teammate.sendMessage("§c팀 신호기가 사라졌습니다. 24시간 유예기간이 이미 지났다면 나약함이 적용됩니다.");
+                    applyPenalty(teammate);
+                }
+            }
+            Player p = Bukkit.getPlayer(owner); if (p != null) p.sendMessage("신호기가 없어졌습니다. /buybeacon으로 재구매할 수 있습니다.");
+        }
         saveState();
     }
     private void tick() {
@@ -696,7 +713,7 @@ public final class Main extends JavaPlugin implements Listener {
         UUID id = p.getUniqueId();
         UUID owner = finalOwner(id);
         // A placed team beacon protects all members, even late joiners.
-        if (everPlaced.contains(owner) || beacons.containsKey(owner)) {
+        if (beacons.containsKey(owner)) {
             if (penaltyApplied.remove(id)) p.removePotionEffect(PotionEffectType.WEAKNESS);
             return;
         }
@@ -952,42 +969,85 @@ public final class Main extends JavaPlugin implements Listener {
         // Prevent additional vanilla dragon XP from changing the fixed reward.
         e.setDroppedExp(0);
     }
-    @EventHandler public void onAnvil(PrepareAnvilEvent e) {
+    // The vanilla 1.19.4 client displays "Too Expensive!" whenever the visible
+    // repair cost is >= 40, even if the server raises maximumRepairCost.
+    // Display at most 39; for higher costs perform an atomic server-side trade.
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onAnvil(PrepareAnvilEvent e) {
         AnvilInventory inv = e.getInventory();
-        // Allow survival players to use anvils above the vanilla 39-level limit.
-        // The actual XP cost is still charged by Minecraft.
-        inv.setMaximumRepairCost(1000000);
+        anvilTrueCosts.remove(inv);
+        inv.setMaximumRepairCost(40);
         ItemStack left = inv.getItem(0), right = inv.getItem(1);
-        if (left == null || right == null || left.getType() == Material.AIR) return;
+        if (left == null || left.getType() == Material.AIR) return;
         if (containsBanned(left) || containsBanned(right) || containsBanned(e.getResult())) {
             e.setResult(null); return;
         }
-        ItemStack result = left.clone();
-        boolean changed = false;
-        int targetLevel = 0;
+        if (right == null || right.getType() == Material.AIR) return;
+        ItemStack result = e.getResult() == null ? left.clone() : e.getResult().clone();
+        int specialCost = 0;
+        boolean modified = false;
         for (Enchantment enchant : new Enchantment[]{Enchantment.DAMAGE_ALL, Enchantment.PROTECTION_ENVIRONMENTAL}) {
             int a = enchantLevel(left, enchant), b = enchantLevel(right, enchant);
-            if (a < 1 || a != b || a >= 10) continue;
+            if (b <= 0) continue;
             if (left.getType() != Material.ENCHANTED_BOOK && !enchant.canEnchantItem(left)) continue;
             if (right.getType() != Material.ENCHANTED_BOOK && left.getType() != right.getType()) continue;
-            int next = a + 1;
-            setEnchant(result, enchant, next);
-            changed = true;
-            targetLevel = Math.max(targetLevel, next);
+            int target = (a == b && a > 0) ? Math.min(10, a + 1) : Math.max(a, b);
+            if (target <= a || target > 10) continue;
+            setEnchant(result, enchant, target);
+            modified = true;
+            if (a == b && a >= 5) specialCost = Math.max(specialCost, a * 10);
         }
-        if (changed) {
-            e.setResult(result);
-            // Same-level merging: V+V -> VI costs 50, VI+VI -> VII costs 60, ... IX+IX -> X costs 90.
-            // Other anvil operations keep their vanilla calculated costs.
-            int cost = (targetLevel - 1) * 10;
-            inv.setRepairCost(cost);
-        }
+        int vanillaCost = Math.max(1, inv.getRepairCost());
+        int trueCost = specialCost > 0 ? specialCost : vanillaCost;
+        if (modified) e.setResult(result);
+        if (e.getResult() == null || e.getResult().getType() == Material.AIR) return;
+        if (trueCost >= 40) {
+            anvilTrueCosts.put(inv, trueCost);
+            inv.setRepairCost(1); // No client-side "Too Expensive!" message.
+        } else if (specialCost > 0) inv.setRepairCost(trueCost);
     }
-    // Some server implementations reset the maximum after prepare events.
-    // Reapply only the ceiling, never force a flat 39-level repair cost.
-    @EventHandler(priority = EventPriority.MONITOR)
-    public void keepAnvilLimitOpen(PrepareAnvilEvent e) {
-        e.getInventory().setMaximumRepairCost(1000000);
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onAnvilResultClick(InventoryClickEvent e) {
+        if (!(e.getView().getTopInventory() instanceof AnvilInventory) || e.getRawSlot() != 2) return;
+        AnvilInventory inv = (AnvilInventory) e.getView().getTopInventory();
+        Integer trueCost = anvilTrueCosts.get(inv);
+        if (trueCost == null) return; // Vanilla handles ordinary low-cost operations.
+        e.setCancelled(true);
+        if (!(e.getWhoClicked() instanceof Player)) return;
+        Player player = (Player) e.getWhoClicked();
+        ItemStack result = inv.getItem(2), left = inv.getItem(0), right = inv.getItem(1);
+        if (result == null || result.getType() == Material.AIR || left == null || right == null) return;
+        if (!player.getGameMode().equals(GameMode.CREATIVE) && player.getLevel() < trueCost) {
+            player.sendMessage("§c모루 작업에 " + trueCost + "레벨이 필요합니다. 현재 " + player.getLevel() + "레벨입니다.");
+            return;
+        }
+        // For safety, support a normal pickup into an empty cursor only.
+        // Shift-click and cursor swaps are rejected to avoid duplicating items.
+        if (!e.getClick().isLeftClick() && !e.getClick().isRightClick()) return;
+        if (e.isShiftClick()) { player.sendMessage("§e고비용 모루 작업은 결과물을 일반 클릭으로 가져가세요."); return; }
+        ItemStack cursor = e.getCursor();
+        if (cursor != null && cursor.getType() != Material.AIR) {
+            player.sendMessage("§e커서를 비우고 결과물을 클릭하세요."); return;
+        }
+        ItemStack delivered = result.clone();
+        int charge = trueCost;
+        // Defer inventory mutation until after InventoryClickEvent completes.
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (!player.isOnline() || !(player.getOpenInventory().getTopInventory() instanceof AnvilInventory)
+                    || player.getOpenInventory().getTopInventory() != inv) return;
+            if (inv.getItem(0) == null || inv.getItem(1) == null) return;
+            if (player.getGameMode() != GameMode.CREATIVE && player.getLevel() < charge) return;
+            ItemStack held = player.getItemOnCursor();
+            if (held != null && held.getType() != Material.AIR) return;
+            if (player.getGameMode() != GameMode.CREATIVE) player.setLevel(player.getLevel() - charge);
+            inv.setItem(0, null);
+            ItemStack ingredient = inv.getItem(1);
+            if (ingredient.getAmount() <= 1) inv.setItem(1, null);
+            else { ingredient = ingredient.clone(); ingredient.setAmount(ingredient.getAmount() - 1); inv.setItem(1, ingredient); }
+            player.setItemOnCursor(delivered);
+            anvilTrueCosts.remove(inv);
+            player.updateInventory();
+        });
     }
     private int enchantLevel(ItemStack item, Enchantment enchant) {
         if (item.getType() == Material.ENCHANTED_BOOK && item.getItemMeta() instanceof EnchantmentStorageMeta)
